@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .header {
+            background-color: #333;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .welcome {
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+        .stat {
+            background-color: #e0e0e0;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            flex: 1;
+            margin: 0 10px;
+        }
+        .stat h3 {
+            margin: 0;
+            font-size: 36px;
+        }
+        .stat p {
+            margin: 5px 0 0 0;
+        }
+        .actions {
+            display: flex;
+            justify-content: space-around;
+        }
+        .action-btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .action-btn:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Admin Dashboard</h1>
+    </div>
+    <div class="container">
+        <div class="welcome">
+            Welcome, <%= user.firstName || 'Admin' %>!
+        </div>
+        <div class="stats">
+            <div class="stat">
+                <h3>0</h3>
+                <p>Total Users</p>
+            </div>
+            <div class="stat">
+                <h3>0</h3>
+                <p>Total Sellers</p>
+            </div>
+            <div class="stat">
+                <h3>0</h3>
+                <p>Total Orders</p>
+            </div>
+        </div>
+        <div class="actions">
+            <a href="#" class="action-btn">Manage Users</a>
+            <a href="#" class="action-btn">Manage Sellers</a>
+            <a href="#" class="action-btn">View Reports</a>
+            <a href="#" class="action-btn">Settings</a>
+        </div>
+    </div>
+</body>
+</html>
