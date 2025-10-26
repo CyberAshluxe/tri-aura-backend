@@ -42,8 +42,45 @@ const postRegister = async (req, res) => {
       transporter.sendMail({
         from: EMAIL_USER,
         to: payload.email,
-        subject: "Welcome to Our Application",
-        html: `<h2>🎉 Welcome Seller!</h2><p>Your seller account has been created successfully.</p>`
+        subject: "🎉 Welcome to Triora Seller Hub!",
+
+html: `
+  <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f6f7fb; padding: 40px 0;">
+    <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); overflow: hidden;">
+      
+      <div style="background: linear-gradient(135deg, #ff7a00, #ffb347); color: white; text-align: center; padding: 30px 20px;">
+        <h1 style="margin: 0; font-size: 26px;">Welcome Seller 🎉</h1>
+      </div>
+      
+      <div style="padding: 30px 25px; color: #333;">
+        <h2 style="color: #ff7a00; margin-top: 0;">Your Seller Account Is Ready!</h2>
+        <p style="font-size: 16px; line-height: 1.6;">
+          Congratulations on becoming part of <strong>Triora</strong>! Your seller account has been created successfully.
+        </p>
+        <p style="font-size: 16px; line-height: 1.6;">
+          You can now list your products, manage your store, and start reaching customers across our growing marketplace.
+        </p>
+
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="https://triora-six.vercel.app//seller-dashboard" 
+             style="background-color: #ff7a00; color: white; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-weight: 600; display: inline-block;">
+            Go to Seller Dashboard
+          </a>
+        </div>
+
+        <p style="font-size: 14px; color: #777; text-align: center;">
+          If you didn’t register as a seller, you can safely ignore this email.
+        </p>
+      </div>
+      
+      <div style="background: #f2f2f2; text-align: center; padding: 15px; font-size: 13px; color: #888;">
+        &copy; ${new Date().getFullYear()} Triora Marketplace. All rights reserved.
+      </div>
+
+    </div>
+  </div>
+`
+
       }, (err, info) => {
         if (err) console.error("Email error:", err);
         else console.log("Welcome email sent:", info.response);

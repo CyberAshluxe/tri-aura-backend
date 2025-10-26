@@ -28,7 +28,7 @@ const postContact = async (req, res) => {
     const { data, error } = await resend.emails.send({
       from: "onboarding@resend.dev", // Use your verified domain
       to: process.env.TO_EMAIL, // Your email
-      subject: "New Contact Form Submission",
+      subject: "Message From Triora",
       html: `
         <h2>New Contact Message</h2>
         <p><strong>Name:</strong> ${name}</p>
