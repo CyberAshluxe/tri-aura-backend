@@ -32,7 +32,10 @@ const paymentRouter = require("./routes/payment.route");
 app.use("/payment", paymentRouter);
 
 // Google OAuth client
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const client = new OAuth2Client({
+  clientId: process.env.GOOGLE_CLIENT_ID,
+  redirectUri: 'https://triora-six.vercel.app/'
+});
 
 // Google Auth route - works for all roles
 app.post("/user/google-auth", async (req, res) => {

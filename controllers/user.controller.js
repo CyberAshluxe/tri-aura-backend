@@ -11,7 +11,10 @@ const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 
-const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+const client = new OAuth2Client({
+  clientId: GOOGLE_CLIENT_ID,
+  redirectUri: 'https://triora-six.vercel.app/'
+});
 
 // ===== Email Transporter =====
 function createTransporter() {
