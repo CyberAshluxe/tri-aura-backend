@@ -1,6 +1,8 @@
 require("dotenv").config();
 const Flutterwave = require('flutterwave-node-v3');
 const User = require("../models/user.model");
+const { FlutterwaveTransaction } = require("../models/transaction.model");
+const { verifyHMAC } = require("../utils/encryption.util");
 
 // Initialize Flutterwave client safely
 let flw;
@@ -93,9 +95,44 @@ const verifyPayment = async (req, res) => {
     }
 
     const response = await flw.Transaction.verify({ id: transaction_id });
+    
     if (response && response.data && response.data.status === "successful") {
-      // Update user payment history if needed
       const userId = req.user.id;
+      const txRef = response.data.tx_ref;
+      const amount = response.data.amount;
+
+      // Check for duplicate verification (idempotency)
+      const existingFWTransaction = await FlutterwaveTransaction.findOne({
+        flutterwave_reference: txRef,
+        user_id: userId,
+      });
+
+      if (existingFWTransaction && existingFWTransaction.verification_status === "verified") {
+        // Already verified - return success but don't double-credit
+        return res.json({
+          message: "Payment already verified",
+          data: response.data,
+          alreadyVerified: true,
+        });
+      }
+
+      // Create/update Flutterwave transaction record
+      const fwTransaction = await FlutterwaveTransaction.findOneAndUpdate(
+        { flutterwave_reference: txRef, user_id: userId },
+        {
+          user_id: userId,
+          amount,
+          currency: response.data.currency || "NGN",
+          verification_status: "verified",
+          raw_response: response.data,
+          flutterwave_transaction_id: transaction_id,
+          verified_at: new Date(),
+          webhook_signature_valid: true,
+        },
+        { upsert: true, new: true }
+      );
+
+      // Update user payment history
       await User.findByIdAndUpdate(userId, {
         $push: {
           paymentHistory: {
@@ -108,13 +145,106 @@ const verifyPayment = async (req, res) => {
         }
       });
 
-      res.json({ message: "Payment verified successfully", data: response.data });
+      // Note: Wallet crediting happens via OTP verification flow
+      // The user will verify their OTP and then wallet is credited
+
+      res.json({
+        message: "Payment verified successfully. Please complete OTP verification to credit wallet.",
+        data: response.data,
+        transactionReference: txRef,
+        nextStep: "otp_verification"
+      });
     } else {
-      res.status(400).json({ message: "Payment verification failed", data: response ? response.data : null });
+      // Verification failed
+      const txRef = response?.data?.tx_ref;
+      if (txRef) {
+        await FlutterwaveTransaction.findOneAndUpdate(
+          { flutterwave_reference: txRef, user_id: req.user.id },
+          {
+            verification_status: "failed",
+            error_details: {
+              message: "Payment verification failed",
+              details: response?.data,
+            },
+          },
+          { upsert: true }
+        );
+      }
+
+      res.status(400).json({
+        message: "Payment verification failed",
+        data: response ? response.data : null
+      });
     }
   } catch (error) {
     console.error("Payment verification error:", error);
-    res.status(500).json({ message: "Payment verification failed", error: error.message });
+    res.status(500).json({
+      message: "Payment verification failed",
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Webhook endpoint for Flutterwave payment notifications
+ * POST /payment/webhook
+ * Webhook signature verification required
+ */
+const handleFlutterwaveWebhook = async (req, res) => {
+  try {
+    const hash = req.headers["verificationhash"];
+    const body = JSON.stringify(req.body);
+
+    // Verify webhook signature
+    const verifyHash = require("crypto")
+      .createHmac("sha256", process.env.FLUTTERWAVE_SECRET_KEY)
+      .update(body)
+      .digest("hex");
+
+    if (hash !== verifyHash) {
+      console.error("❌ Invalid webhook signature");
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { data } = req.body;
+    if (!data || data.status !== "successful") {
+      return res.json({ message: "Not a successful payment event" });
+    }
+
+    const txRef = data.tx_ref;
+    const userId = data.customer?.id; // Should contain user ID in metadata
+
+    // Check for duplicate webhook (idempotency)
+    const existingTransaction = await FlutterwaveTransaction.findOne({
+      flutterwave_reference: txRef,
+      webhook_verified_at: { $exists: true },
+    });
+
+    if (existingTransaction) {
+      console.log(`✅ Webhook already processed for ${txRef}`);
+      return res.json({ message: "Webhook already processed" });
+    }
+
+    // Update Flutterwave transaction record
+    await FlutterwaveTransaction.findOneAndUpdate(
+      { flutterwave_reference: txRef },
+      {
+        verification_status: "verified",
+        raw_response: data,
+        webhook_signature_valid: true,
+        webhook_verified_at: new Date(),
+      },
+      { upsert: true }
+    );
+
+    console.log(`✅ Webhook processed for transaction ${txRef}`);
+    res.json({ message: "Webhook processed" });
+  } catch (error) {
+    console.error("Webhook processing error:", error);
+    res.status(500).json({
+      message: "Webhook processing failed",
+      error: error.message
+    });
   }
 };
 
@@ -184,5 +314,6 @@ module.exports = {
   initiatePayment,
   completePayment,
   verifyPayment,
+  handleFlutterwaveWebhook,
   getPaymentHistory
 };

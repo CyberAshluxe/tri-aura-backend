@@ -3,6 +3,7 @@ const {
   initiatePayment,
   completePayment,
   verifyPayment,
+  handleFlutterwaveWebhook,
   getPaymentHistory
 } = require('../controllers/payment.controller');
 
@@ -59,5 +60,11 @@ router.get('/verify', verifyPayment);
 
 // Get payment history
 router.get('/history', getPaymentHistory);
+
+// Webhook endpoint (no auth required - signature verified instead)
+router.post('/webhook', (req, res, next) => {
+  // Remove auth middleware for webhook
+  handleFlutterwaveWebhook(req, res);
+});
 
 module.exports = router;

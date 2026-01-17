@@ -30,6 +30,8 @@ const contactRouter = require("./routes/contact.route");
 app.use("/api/contact", contactRouter);
 const paymentRouter = require("./routes/payment.route");
 app.use("/payment", paymentRouter);
+const walletRouter = require("./routes/wallet.route");
+app.use("/api/wallet", walletRouter);
 
 // Google OAuth client
 const client = new OAuth2Client({
