@@ -59,6 +59,26 @@ const postRegister = async (req, res) => {
     const newCustomer = new customerModel(payload);
     await newCustomer.save();
 
+    // Auto-create wallet for new user
+    try {
+      const Wallet = require("../models/wallet.model");
+      const ENCRYPTION_PASSWORD = process.env.WALLET_ENCRYPTION_PASSWORD || "default-wallet-key";
+      
+      const tempWallet = new Wallet({
+        user_id: newCustomer._id,
+        encrypted_balance: "0",
+        encryption_key: ENCRYPTION_PASSWORD,
+        status: "active",
+      });
+      // Use the setBalance method to properly encrypt
+      tempWallet.setBalance(0, ENCRYPTION_PASSWORD);
+      await tempWallet.save();
+      console.log(`✅ Created wallet for new user ${newCustomer._id}`);
+    } catch (walletErr) {
+      console.error("⚠️ Failed to create wallet for new user:", walletErr.message);
+      // Don't fail signup if wallet creation fails
+    }
+
     // Send welcome email
     const transporter = createTransporter();
     if (transporter) {

@@ -1,20 +1,20 @@
 const { OTPVerification } = require("../models/transaction.model");
 const { hashData, verifyHash, generateRandomToken } = require("../utils/encryption.util");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
 /**
  * OTP Service
  * Handles OTP generation, verification, and expiration
  */
 
-// Configure email service
-const emailTransporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+// Configure email service - using Resend (more reliable than Gmail)
+let emailClient;
+if (process.env.RESEND_API_KEY) {
+  emailClient = new Resend(process.env.RESEND_API_KEY);
+  console.log("✅ Resend email service initialized");
+} else {
+  console.error("❌ RESEND_API_KEY not configured");
+}
 
 /**
  * Generate a 6-digit OTP
@@ -97,48 +97,78 @@ const createOTP = async (userId, purpose, options = {}) => {
  */
 const sendOTPEmail = async (email, otp, purpose) => {
   try {
+    if (!emailClient) {
+      throw new Error("Email service not configured. RESEND_API_KEY missing.");
+    }
+
     const purposeText = {
       wallet_funding: "Wallet Funding",
       wallet_deduction: "Purchase Confirmation",
       sensitive_action: "Sensitive Action",
     }[purpose] || "Verification";
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: `Your ${purposeText} OTP Code`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #333;">Your Verification Code</h2>
-          <p>You requested a verification code for <strong>${purposeText}</strong>.</p>
-          
-          <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
-            <p style="font-size: 14px; color: #666; margin: 0;">Your OTP Code:</p>
-            <p style="font-size: 36px; font-weight: bold; color: #007bff; letter-spacing: 5px; margin: 10px 0;">${otp}</p>
-            <p style="font-size: 12px; color: #999; margin: 0;">Valid for 5 minutes</p>
-          </div>
-          
-          <p style="color: #666; font-size: 14px;">
-            <strong>Important Security Notes:</strong><br>
-            • Never share this code with anyone<br>
-            • TRI-AURA staff will never ask for this code<br>
-            • This code expires in 5 minutes<br>
-            • If you didn't request this, please ignore this email
-          </p>
-          
-          <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-          <p style="color: #999; font-size: 12px; text-align: center;">
-            This is an automated message, please do not reply to this email.
-          </p>
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">Your Verification Code</h2>
+        <p>You requested a verification code for <strong>${purposeText}</strong>.</p>
+        
+        <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+          <p style="font-size: 14px; color: #666; margin: 0;">Your OTP Code:</p>
+          <p style="font-size: 36px; font-weight: bold; color: #007bff; letter-spacing: 5px; margin: 10px 0;">${otp}</p>
+          <p style="font-size: 12px; color: #999; margin: 0;">Valid for 5 minutes</p>
         </div>
-      `,
-    };
+        
+        <p style="color: #666; font-size: 14px;">
+          <strong>Important Security Notes:</strong><br>
+          • Never share this code with anyone<br>
+          • TRI-AURA staff will never ask for this code<br>
+          • This code expires in 5 minutes<br>
+          • If you didn't request this, please ignore this email
+        </p>
+        
+        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+        <p style="color: #999; font-size: 12px; text-align: center;">
+          This is an automated message, please do not reply to this email.
+        </p>
+      </div>
+    `;
 
-    await emailTransporter.sendMail(mailOptions);
-    console.log(`✅ OTP sent to ${email}`);
+    // Send email via Resend
+    console.log(`📧 [OTP Service] Sending OTP email via Resend to ${email}`);
+    
+    let result;
+    try {
+      result = await emailClient.emails.send({
+        from: "onboarding@triora.name.ng",
+        to: email,
+        subject: `Your ${purposeText} OTP Code`,
+        html: emailHtml,
+      });
+    } catch (resendError) {
+      console.error("❌ [OTP Service] Resend API call failed:", resendError.message);
+      console.error("❌ [OTP Service] Stack:", resendError.stack);
+      throw new Error(`Resend API Error: ${resendError.message}`);
+    }
+
+    // Check for error in response
+    if (result.error) {
+      console.error("❌ [OTP Service] Resend returned error:", result.error);
+      const errorMsg = result.error.message || JSON.stringify(result.error);
+      throw new Error(`Email service error: ${errorMsg}`);
+    }
+
+    // Verify we got an ID back (successful send) - Resend returns { data: { id: ... } }
+    const messageId = result.data?.id || result.id;
+    if (!messageId) {
+      console.error("❌ [OTP Service] Resend response missing ID:", result);
+      throw new Error("Email send response invalid - no message ID returned");
+    }
+
+    console.log(`✅ [OTP Service] OTP email sent to ${email} via Resend (ID: ${messageId})`);
     return true;
   } catch (error) {
-    console.error("OTP email send error:", error.message);
+    console.error("❌ [OTP Service] OTP email send error:", error.message);
+    console.error("❌ [OTP Service] Error stack:", error.stack);
     throw error;
   }
 };

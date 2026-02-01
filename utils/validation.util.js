@@ -260,6 +260,36 @@ const createValidationMiddleware = (validateFn) => {
   };
 };
 
+/**
+ * Validate send OTP payload
+ * @param {object} payload - Raw request payload
+ * @returns {object|null} Validated payload or null if invalid
+ */
+const validateSendOTPPayload = (payload) => {
+  const errors = [];
+
+  if (!payload.purpose) errors.push("purpose is required");
+  if (!payload.email) errors.push("email is required");
+
+  const validPurposes = ["wallet_funding", "wallet_deduction"];
+  if (payload.purpose && !validPurposes.includes(payload.purpose)) {
+    errors.push(`purpose must be one of: ${validPurposes.join(", ")}`);
+  }
+
+  if (payload.email && !isValidEmail(payload.email)) {
+    errors.push("Invalid email format");
+  }
+
+  if (errors.length > 0) {
+    return null;
+  }
+
+  return {
+    purpose: sanitizeString(payload.purpose),
+    email: sanitizeString(payload.email),
+  };
+};
+
 module.exports = {
   isValidEmail,
   isValidObjectId,
@@ -271,6 +301,7 @@ module.exports = {
   sanitizeObject,
   validateFundingPayload,
   validateOTPPayload,
+  validateSendOTPPayload,
   validatePurchasePayload,
   validateFlutterwaveWebhook,
   createValidationMiddleware,

@@ -34,9 +34,29 @@ const getWalletBalance = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const wallet = await Wallet.findOne({ user_id: userId });
+    let wallet = await Wallet.findOne({ user_id: userId });
+    
+    // Auto-create wallet if it doesn't exist
     if (!wallet) {
-      return res.status(404).json({ message: "Wallet not found" });
+      try {
+        // Create encrypted zero balance using setBalance method pattern
+        const tempWallet = new Wallet({
+          user_id: userId,
+          encrypted_balance: "0",
+          encryption_key: ENCRYPTION_PASSWORD,
+          status: "active",
+        });
+        // Use the setBalance method to properly encrypt
+        tempWallet.setBalance(0, ENCRYPTION_PASSWORD);
+        wallet = await tempWallet.save();
+        console.log(`✅ Auto-created wallet for user ${userId}`);
+      } catch (walletCreateErr) {
+        console.error("Failed to auto-create wallet:", walletCreateErr.message);
+        return res.status(500).json({
+          message: "Failed to create wallet",
+          details: walletCreateErr.message,
+        });
+      }
     }
 
     if (wallet.status !== "active") {
@@ -111,22 +131,34 @@ const getTransactionHistory = async (req, res) => {
  * Requires: amount, email
  */
 const initiateWalletFunding = async (req, res) => {
-  const session = await Wallet.startSession();
-  session.startTransaction();
-
+  let session;
   try {
+    // Get session from mongoose connection
+    const mongoose = require("mongoose");
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     const userId = req.user.id;
     const { amount, email } = req.validatedData;
+
+    console.log(`🔵 [initiateWalletFunding] Starting wallet funding for user ${userId}`);
+    console.log(`🔵 [initiateWalletFunding] Amount: ${amount}, Email: ${email}`);
 
     // Get user
     const user = await User.findById(userId);
     if (!user) {
+      await session.abortTransaction();
+      await session.endSession();
+      console.error(`❌ User not found: ${userId}`);
       return res.status(404).json({ message: "User not found" });
     }
+
+    console.log(`✅ User found: ${user.email}`);
 
     // Ensure wallet exists
     let wallet = await Wallet.findOne({ user_id: userId }).session(session);
     if (!wallet) {
+      console.log(`📝 Creating new wallet for user ${userId}`);
       wallet = await Wallet.create([{
         user_id: userId,
         encrypted_balance: encrypt("0"),
@@ -134,14 +166,21 @@ const initiateWalletFunding = async (req, res) => {
         status: "active",
       }], { session });
       wallet = wallet[0];
+      console.log(`✅ Wallet created: ${wallet._id}`);
+    } else {
+      console.log(`✅ Existing wallet found: ${wallet._id}`);
     }
 
     if (wallet.status !== "active") {
       await session.abortTransaction();
+      await session.endSession();
+      console.error(`❌ Wallet status is ${wallet.status}`);
       return res.status(403).json({
         message: `Wallet is ${wallet.status}. Cannot fund at this time.`,
       });
     }
+
+    console.log(`✅ Wallet status is active, proceeding with fraud assessment`);
 
     // Assess fraud risk before processing
     const fraudAssessment = await assessFraudRisk(
@@ -154,8 +193,12 @@ const initiateWalletFunding = async (req, res) => {
       userId
     );
 
+    console.log(`✅ Fraud assessment completed - Score: ${fraudAssessment.score}, Level: ${fraudAssessment.riskLevel}`);
+
     // Create pending transaction record
     const transactionRef = `FUND-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    console.log(`📝 [initiateWalletFunding] Creating transaction with reference: ${transactionRef}`);
+    
     const transaction = await Transaction.create([{
       transaction_id: `TXN-${Date.now()}`,
       user_id: userId,
@@ -173,6 +216,8 @@ const initiateWalletFunding = async (req, res) => {
       user_agent: req.headers["user-agent"],
       device_fingerprint: req.headers["user-agent"],
     }], { session });
+    
+    console.log(`✅ [initiateWalletFunding] Transaction created with ID: ${transaction[0]._id}`);
 
     // If high risk, log and require additional verification
     if (fraudAssessment.requiresManualReview) {
@@ -187,36 +232,68 @@ const initiateWalletFunding = async (req, res) => {
     await session.commitTransaction();
 
     // Generate OTP for wallet funding
-    const otpResult = await createOTP(userId, "wallet_funding", {
-      transactionReference: transactionRef,
-    });
+    let otpResult;
+    try {
+      console.log(`📝 [initiateWalletFunding] Creating OTP for wallet funding, user: ${userId}`);
+      otpResult = await createOTP(userId, "wallet_funding", {
+        transactionReference: transactionRef,
+      });
+      console.log(`✅ [initiateWalletFunding] OTP created successfully. OTP ID: ${otpResult.otpId}`);
+    } catch (otpError) {
+      console.error(`❌ [initiateWalletFunding] OTP creation failed:`, otpError.message);
+      console.error(`❌ [initiateWalletFunding] Stack:`, otpError.stack);
+      await session.abortTransaction();
+      await session.endSession();
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate OTP",
+        details: otpError.message,
+      });
+    }
 
     // Send OTP via email
+    let emailSent = false;
     try {
-      await sendOTPEmail(email, otpResult.otp, "wallet_funding");
+      console.log(`📧 [initiateWalletFunding] Sending OTP email to: ${user.email}`);
+      await sendOTPEmail(user.email, otpResult.otp, "wallet_funding");
+      console.log(`✅ [initiateWalletFunding] OTP email sent successfully to ${user.email}`);
+      emailSent = true;
     } catch (emailError) {
-      console.error("Failed to send OTP email:", emailError.message);
-      // Continue anyway, OTP is generated
+      console.error(`❌ [initiateWalletFunding] OTP email send failed:`, emailError.message);
+      console.error(`❌ [initiateWalletFunding] Email error type:`, emailError.constructor.name);
+      console.error(`❌ [initiateWalletFunding] Email error stack:`, emailError.stack);
+      console.warn(`⚠️ [initiateWalletFunding] OTP was created but email delivery failed. User must request resend.`);
     }
 
     res.json({
       success: true,
-      message: "Wallet funding initiated. Please verify with OTP.",
+      message: emailSent ? "Wallet funding initiated. OTP sent to your email." : "Wallet funding initiated. OTP generated but email send failed. Please request to resend OTP.",
       transactionReference: transactionRef,
       otpExpiresIn: otpResult.expiresIn,
+      otpSent: emailSent,
       fraudRiskLevel: fraudAssessment.riskLevel,
       requiresManualReview: fraudAssessment.requiresManualReview,
       nextStep: "otp_verification",
+      warning: !emailSent ? "Email delivery failed. Check your email or request OTP resend." : null,
     });
   } catch (error) {
-    await session.abortTransaction();
-    console.error("Wallet funding initiation error:", error.message);
+    console.error("❌ Wallet funding initiation error:", error.message);
+    console.error("Stack trace:", error.stack);
+    try {
+      await session.abortTransaction();
+    } catch (sessionError) {
+      console.error("Error aborting transaction:", sessionError.message);
+    }
     res.status(500).json({
       message: "Failed to initiate wallet funding",
       details: error.message,
     });
   } finally {
-    await session.endSession();
+    try {
+      await session.endSession();
+    } catch (sessionError) {
+      console.error("Error ending session:", sessionError.message);
+    }
   }
 };
 
@@ -228,23 +305,66 @@ const initiateWalletFunding = async (req, res) => {
 const verifyWalletOTP = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { otp, transaction_reference } = req.validatedData;
+    let { otp, transaction_reference } = req.validatedData;
+    const { ObjectId } = require("mongoose").Types;
+    const { OTPVerification } = require("../models/transaction.model");
 
-    // Get the pending transaction
-    const transaction = await Transaction.findOne({
+    console.log(`🔵 [verifyWalletOTP] Looking for transaction with reference: ${transaction_reference}`);
+    console.log(`🔵 [verifyWalletOTP] User ID: ${userId}`);
+
+    // First, try to find the transaction
+    let transaction = await Transaction.findOne({
       user_id: userId,
       reference: transaction_reference,
       status: "pending",
     });
 
-    if (!transaction) {
-      return res.status(404).json({
-        message: "Transaction not found or already processed",
-      });
+    let otpPurpose = "wallet_funding"; // Default purpose - changed from wallet_deduction
+
+    // If no transaction found and reference looks like an ObjectId, it might be an otpId
+    if (!transaction && ObjectId.isValid(transaction_reference)) {
+      console.log(`🔍 [verifyWalletOTP] No transaction found. Checking if reference is an OTP ID...`);
+      
+      const otpRecord = await OTPVerification.findById(transaction_reference);
+      
+      if (otpRecord) {
+        console.log(`✅ [verifyWalletOTP] Found OTP record with ID: ${otpRecord._id}`);
+        console.log(`✅ [verifyWalletOTP] OTP purpose: ${otpRecord.purpose}`);
+        otpPurpose = otpRecord.purpose;
+        
+        // If OTP has a transaction_reference, try to find the transaction
+        if (otpRecord.transaction_reference) {
+          console.log(`🔍 [verifyWalletOTP] OTP has stored transaction_reference: ${otpRecord.transaction_reference}`);
+          transaction = await Transaction.findOne({
+            user_id: userId,
+            reference: otpRecord.transaction_reference,
+            status: "pending",
+          });
+          
+          if (transaction) {
+            console.log(`✅ [verifyWalletOTP] Found transaction using OTP's stored reference!`);
+          }
+        }
+      }
     }
 
-    // Verify OTP
-    const otpVerification = await verifyOTP(userId, otp, transaction.type === "funding" ? "wallet_funding" : "wallet_deduction");
+    // Verify OTP first (regardless of whether transaction exists)
+    console.log(`🔍 [verifyWalletOTP] Verifying OTP for purpose: ${otpPurpose}`);
+    const otpVerification = await verifyOTP(userId, otp, otpPurpose);
+    console.log(`✅ [verifyWalletOTP] OTP verified successfully`);
+
+    // If no transaction exists after OTP verification, that's OK for standalone OTP verification
+    if (!transaction) {
+      console.log(`⚠️ [verifyWalletOTP] No associated transaction found, but OTP is valid`);
+      return res.json({
+        success: true,
+        message: "OTP verified successfully",
+        otpId: otpVerification.otpId,
+        purpose: otpPurpose,
+      });
+    }
+    
+    console.log(`✅ [verifyWalletOTP] Transaction found: ${transaction._id}`);
 
     // OTP verified - now process the transaction
     if (transaction.type === "funding") {
@@ -503,24 +623,48 @@ const deductWalletBalance = async (req, res) => {
 
     // If high risk, require OTP
     if (fraudAssessment.requiresOTP) {
-      const otpResult = await createOTP(userId, "wallet_deduction", {
-        transactionReference: transactionRef,
-      });
+      let otpResult;
+      try {
+        console.log(`📝 [deductWalletBalance] Creating OTP for wallet deduction, user: ${userId}`);
+        otpResult = await createOTP(userId, "wallet_deduction", {
+          transactionReference: transactionRef,
+        });
+        console.log(`✅ [deductWalletBalance] OTP created successfully. OTP ID: ${otpResult.otpId}`);
+      } catch (otpError) {
+        console.error(`❌ [deductWalletBalance] OTP creation failed:`, otpError.message);
+        console.error(`❌ [deductWalletBalance] Stack:`, otpError.stack);
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(500).json({
+          success: false,
+          message: "Failed to generate OTP for fraud verification",
+          details: otpError.message,
+        });
+      }
 
       const user = await User.findById(userId);
+      let emailSent = false;
       try {
+        console.log(`📧 [deductWalletBalance] Sending OTP email to: ${user.email}`);
         await sendOTPEmail(user.email, otpResult.otp, "wallet_deduction");
+        console.log(`✅ [deductWalletBalance] OTP email sent successfully to ${user.email}`);
+        emailSent = true;
       } catch (emailError) {
-        console.error("OTP email send error:", emailError.message);
+        console.error(`❌ [deductWalletBalance] OTP email send failed:`, emailError.message);
+        console.error(`❌ [deductWalletBalance] Email error type:`, emailError.constructor.name);
+        console.error(`❌ [deductWalletBalance] Email error stack:`, emailError.stack);
+        console.warn(`⚠️ [deductWalletBalance] OTP was created but email delivery failed.`);
       }
 
       await session.commitTransaction();
       return res.json({
         success: true,
-        message: "Fraud check required. OTP sent for verification.",
+        message: emailSent ? "Fraud check required. OTP sent for verification." : "Fraud check required. OTP generated but email send failed. Please request to resend OTP.",
         transactionReference: transactionRef,
         requiresOTP: true,
+        otpSent: emailSent,
         fraudRiskLevel: fraudAssessment.riskLevel,
+        warning: !emailSent ? "Email delivery failed. Check your email or request OTP resend." : null,
       });
     }
 
@@ -580,6 +724,167 @@ const createUserWallet = async (userId) => {
   }
 };
 
+/**
+ * Send OTP for wallet operation
+ * POST /api/wallet/otp/send
+ * Body: { purpose, email }
+ * purpose: 'wallet_funding' | 'wallet_deduction'
+ */
+const sendWalletOTP = async (req, res) => {
+  try {
+    console.log("🔵 [sendWalletOTP] Request received");
+    console.log("🔵 [sendWalletOTP] req.user:", req.user);
+    console.log("🔵 [sendWalletOTP] req.validatedData:", req.validatedData);
+    console.log("🔵 [sendWalletOTP] req.body:", req.body);
+    
+    const userId = req.user?.id;
+    if (!userId) {
+      console.error("❌ [sendWalletOTP] No user ID found in request");
+      return res.status(401).json({
+        message: "Authentication required",
+        error: "No user ID in request"
+      });
+    }
+    
+    // Validate request has validatedData
+    if (!req.validatedData) {
+      console.error("❌ [sendWalletOTP] No validatedData in request");
+      console.error("❌ [sendWalletOTP] req.body was:", req.body);
+      return res.status(400).json({
+        message: "Invalid request payload",
+        error: "Validation failed"
+      });
+    }
+
+    const { purpose, email } = req.validatedData;
+    console.log(`📨 [sendWalletOTP] Sending OTP for user ${userId}, purpose: ${purpose}, email: ${email}`);
+
+    // Validate user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      console.error(`❌ [sendWalletOTP] User not found: ${userId}`);
+      return res.status(404).json({ message: "User not found" });
+    }
+    console.log(`✅ [sendWalletOTP] User found: ${user.email}`);
+
+    // Check if user already has a pending OTP for this purpose
+    let existingOTP;
+    try {
+      existingOTP = await getOTPStatus(userId, purpose);
+      console.log(`✅ [sendWalletOTP] OTP status checked:`, existingOTP);
+    } catch (err) {
+      console.error("❌ [sendWalletOTP] Error checking existing OTP:", err.message);
+      existingOTP = { exists: false };
+    }
+
+    if (existingOTP.exists && existingOTP.isValid) {
+      console.log(`⏱️ [sendWalletOTP] OTP already exists for user ${userId}`);
+      return res.status(429).json({
+        message: "OTP already sent. Please check your email.",
+        expiresIn: existingOTP.expiresIn,
+        attempts: existingOTP.attempts,
+      });
+    }
+
+    // Create OTP
+    let otpResult;
+    try {
+      console.log(`📝 [sendWalletOTP] Creating OTP for purpose: ${purpose}`);
+      otpResult = await createOTP(userId, purpose, {
+        blockIfExists: false,
+      });
+      console.log(`✅ [sendWalletOTP] OTP created successfully. otpResult:`, otpResult);
+    } catch (otpError) {
+      console.error("❌ [sendWalletOTP] Failed to create OTP:", otpError.message);
+      console.error("❌ [sendWalletOTP] Stack trace:", otpError.stack);
+      return res.status(500).json({
+        message: "Failed to create OTP",
+        details: otpError.message,
+      });
+    }
+
+    // Send OTP via email
+    try {
+      console.log(`📧 [sendWalletOTP] Sending OTP email to ${email}`);
+      await sendOTPEmail(email, otpResult.otp, purpose);
+      console.log(`✅ [sendWalletOTP] OTP email sent to ${email} for ${purpose}`);
+    } catch (emailError) {
+      console.error("❌ [sendWalletOTP] Failed to send OTP email:", emailError.message);
+      console.error("❌ [sendWalletOTP] Email error stack:", emailError.stack);
+      return res.status(500).json({
+        message: "Failed to send OTP email",
+        details: emailError.message,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `OTP sent to ${email}`,
+      expiresIn: otpResult.expiresIn, // 300 seconds = 5 minutes
+      otpId: otpResult.otpId,
+      transactionReference: otpResult.otpId, // Use otpId as transactionReference for verification
+    });
+  } catch (error) {
+    console.error("❌ Send OTP error:", error.message);
+    console.error("Stack:", error.stack);
+    res.status(500).json({
+      message: "Failed to send OTP",
+      details: error.message,
+    });
+  }
+};
+
+/**
+ * Get OTP status
+ * GET /api/wallet/otp/status
+ * Query params: purpose
+ */
+const getWalletOTPStatus = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { purpose } = req.query;
+
+    console.log(`🔍 Checking OTP status for user ${userId}, purpose: ${purpose}`);
+
+    if (!purpose) {
+      return res.status(400).json({
+        message: "purpose query parameter is required",
+      });
+    }
+
+    // Validate purpose
+    const validPurposes = ["wallet_funding", "wallet_deduction"];
+    if (!validPurposes.includes(purpose)) {
+      return res.status(400).json({
+        message: "Invalid OTP purpose",
+        validPurposes,
+      });
+    }
+
+    let otpStatus;
+    try {
+      otpStatus = await getOTPStatus(userId, purpose);
+      console.log(`✅ OTP status retrieved: exists=${otpStatus.exists}, isValid=${otpStatus.isValid}`);
+    } catch (err) {
+      console.error("Error getting OTP status:", err.message);
+      throw err;
+    }
+
+    res.json({
+      success: true,
+      purpose,
+      ...otpStatus,
+    });
+  } catch (error) {
+    console.error("❌ Get OTP status error:", error.message);
+    console.error("Stack:", error.stack);
+    res.status(500).json({
+      message: "Failed to get OTP status",
+      details: error.message,
+    });
+  }
+};
+
 module.exports = {
   getWalletBalance,
   getTransactionHistory,
@@ -588,4 +893,6 @@ module.exports = {
   creditWalletFromFlutterwave,
   deductWalletBalance,
   createUserWallet,
+  sendWalletOTP,
+  getWalletOTPStatus,
 };

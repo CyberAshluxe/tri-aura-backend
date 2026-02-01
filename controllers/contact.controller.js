@@ -26,7 +26,7 @@ const postContact = async (req, res) => {
 
     // Send email using Resend
     const { data, error } = await resend.emails.send({
-      from: "onboarding@resend.dev", // Use your verified domain
+      from: "onboarding@triora.name.ng", // Use your verified domain
       to: process.env.TO_EMAIL, // Your email
       subject: "Message From Triora",
       html: `

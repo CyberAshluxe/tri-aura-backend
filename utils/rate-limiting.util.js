@@ -98,6 +98,12 @@ const rateLimiters = {
 
   // Password reset/sensitive actions
   sensitiveAction: new RateLimiter(3600000, 3), // 3 attempts per hour
+
+  // OTP sending (prevent spam)
+  otpSend: new RateLimiter(60000, 3), // 3 OTP sends per minute
+
+  // OTP status checking
+  otpStatus: new RateLimiter(60000, 10), // 10 status checks per minute
 };
 
 /**

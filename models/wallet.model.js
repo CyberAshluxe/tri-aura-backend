@@ -68,8 +68,31 @@ walletSchema.index({ created_at: -1 });
 // Instance method to decrypt balance (requires encryption key)
 walletSchema.methods.getBalance = function (encryptionPassword) {
   try {
-    const decipher = crypto.createDecipher("aes192", encryptionPassword);
-    let decrypted = decipher.update(this.encrypted_balance, "hex", "utf8");
+    // Use modern crypto with PBKDF2 for key derivation
+    const algorithm = "aes-192-cbc";
+    const salt = Buffer.alloc(8, 0); // Fixed salt for consistency (in production, use stored salt)
+    
+    // Derive key from password
+    const key = crypto.pbkdf2Sync(encryptionPassword, salt, 100000, 24, "sha256");
+    const parts = this.encrypted_balance.split(":");
+    
+    if (parts.length !== 2) {
+      // Fallback for old format encrypted data - try legacy decryption
+      try {
+        // Try using key directly as IV:data format
+        const iv = Buffer.from(parts[0], "hex");
+        const decipher = crypto.createDecipheriv(algorithm, key, iv);
+        let decrypted = decipher.update(parts[1], "hex", "utf8");
+        decrypted += decipher.final("utf8");
+        return parseFloat(decrypted);
+      } catch (e) {
+        throw new Error("Invalid encrypted balance format");
+      }
+    }
+    
+    const iv = Buffer.from(parts[0], "hex");
+    const decipher = crypto.createDecipheriv(algorithm, key, iv);
+    let decrypted = decipher.update(parts[1], "hex", "utf8");
     decrypted += decipher.final("utf8");
     return parseFloat(decrypted);
   } catch (error) {
@@ -81,10 +104,19 @@ walletSchema.methods.getBalance = function (encryptionPassword) {
 // Instance method to encrypt and update balance (atomic operation)
 walletSchema.methods.setBalance = function (newBalance, encryptionPassword) {
   try {
-    const cipher = crypto.createCipher("aes192", encryptionPassword);
+    const algorithm = "aes-192-cbc";
+    const salt = Buffer.alloc(8, 0); // Fixed salt for consistency (in production, use stored salt)
+    
+    // Derive key from password
+    const key = crypto.pbkdf2Sync(encryptionPassword, salt, 100000, 24, "sha256");
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    
     let encrypted = cipher.update(newBalance.toString(), "utf8", "hex");
     encrypted += cipher.final("hex");
-    this.encrypted_balance = encrypted;
+    
+    // Store as IV:encrypted format
+    this.encrypted_balance = iv.toString("hex") + ":" + encrypted;
     this.last_update_timestamp = new Date();
     return this;
   } catch (error) {

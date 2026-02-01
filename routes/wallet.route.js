@@ -6,6 +6,8 @@ const {
   initiateWalletFunding,
   verifyWalletOTP,
   deductWalletBalance,
+  sendWalletOTP,
+  getWalletOTPStatus,
 } = require("../controllers/wallet.controller");
 const {
   createRateLimitMiddleware,
@@ -15,6 +17,7 @@ const {
   validateFundingPayload,
   validateOTPPayload,
   validatePurchasePayload,
+  validateSendOTPPayload,
 } = require("../utils/validation.util");
 
 const router = express.Router();
@@ -70,6 +73,7 @@ const otpRateLimit = createRateLimitMiddleware("otpVerification", (req) =>
 const validateFunding = createValidationMiddleware(validateFundingPayload);
 const validateOTP = createValidationMiddleware(validateOTPPayload);
 const validatePurchase = createValidationMiddleware(validatePurchasePayload);
+const validateSendOTP = createValidationMiddleware(validateSendOTPPayload);
 
 /**
  * WALLET ENDPOINTS
@@ -135,6 +139,21 @@ router.post(
 );
 
 /**
+ * POST /api/wallet/otp/verify
+ * Verify OTP for wallet operations (alias for /verify-otp)
+ * Body: { otp, transaction_reference }
+ * Authentication: Required
+ * Rate Limit: 3 attempts per 15 minutes
+ */
+router.post(
+  "/otp/verify",
+  authenticateToken,
+  otpRateLimit,
+  validateOTP,
+  verifyWalletOTP
+);
+
+/**
  * POST /api/wallet/deduct
  * Deduct balance for purchase
  * Body: { amount, items, notes? }
@@ -148,6 +167,36 @@ router.post(
   purchaseRateLimit,
   validatePurchase,
   deductWalletBalance
+);
+
+/**
+ * POST /api/wallet/otp/send
+ * Send OTP to user email for wallet operations
+ * Body: { purpose, email }
+ * purpose: 'wallet_funding' | 'wallet_deduction'
+ * Authentication: Required
+ * Rate Limit: 3 requests per minute
+ */
+router.post(
+  "/otp/send",
+  authenticateToken,
+  createRateLimitMiddleware("otpSend", (req) => req.user?.id || req.ip),
+  validateSendOTP,
+  sendWalletOTP
+);
+
+/**
+ * GET /api/wallet/otp/status
+ * Check OTP status for a wallet operation
+ * Query params: purpose ('wallet_funding' | 'wallet_deduction')
+ * Authentication: Required
+ * Rate Limit: 10 requests per minute
+ */
+router.get(
+  "/otp/status",
+  authenticateToken,
+  createRateLimitMiddleware("otpStatus", (req) => req.user?.id || req.ip),
+  getWalletOTPStatus
 );
 
 // Error handling middleware
